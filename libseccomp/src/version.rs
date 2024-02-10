@@ -90,9 +90,11 @@ impl fmt::Display for ScmpVersion {
 pub fn check_version(expected: ScmpVersion) -> Result<bool> {
     let current = ScmpVersion::current()?;
 
-    if current.major == expected.major
-        && (current.minor > expected.minor
-            || (current.minor == expected.minor && current.micro >= expected.micro))
+    if current.major > expected.major
+        || (current.major == expected.major && current.minor > expected.minor)
+        || (current.major == expected.major
+            && current.minor == expected.minor
+            && current.micro >= expected.micro)
     {
         Ok(true)
     } else {
@@ -113,7 +115,6 @@ pub fn check_version(expected: ScmpVersion) -> Result<bool> {
 ///
 /// If the libseccomp version being used is less than the specified version,
 /// an error will be returned.
-// This function will not be used if the libseccomp version is less than 2.5.0.
 pub(crate) fn ensure_supported_version(msg: &str, expected: ScmpVersion) -> Result<()> {
     if check_version(expected)? {
         Ok(())
@@ -130,9 +131,70 @@ pub(crate) fn ensure_supported_version(msg: &str, expected: ScmpVersion) -> Resu
 mod tests {
     use super::*;
 
+    struct ScmpVersionTest {
+        pub msg: &'static str,
+        pub ver: ScmpVersion,
+        pub is_ok: bool,
+    }
+    impl ScmpVersionTest {
+        pub fn new(msg: &'static str, ver: ScmpVersion, is_ok: bool) -> Self {
+            Self { msg, ver, is_ok }
+        }
+    }
+
     #[test]
     fn test_ensure_supported_version() {
-        assert!(ensure_supported_version("test", ScmpVersion::from((2, 4, 0))).is_ok());
-        assert!(ensure_supported_version("test", ScmpVersion::from((100, 100, 100))).is_err());
+        let ver = ScmpVersion::current().unwrap();
+        let tests = &[
+            ScmpVersionTest::new(
+                "VerCurrent",
+                ScmpVersion::from((ver.major, ver.minor, ver.micro)),
+                true,
+            ),
+            ScmpVersionTest::new("VerMajor-1", ScmpVersion::from((ver.major - 1, 0, 0)), true),
+            ScmpVersionTest::new(
+                // To avoid a failure at v*.0.*
+                "If VerMinor != 0 then VerMinor-1, otherwise VerMinor=0",
+                ScmpVersion::from((ver.major, if ver.minor != 0 { ver.minor - 1 } else { 0 }, 0)),
+                true,
+            ),
+            ScmpVersionTest::new(
+                // To avoid a failure at v*.*.0
+                "If VerMicro != 0 then VerMicro-1, otherwise VerMicro=0",
+                ScmpVersion::from((
+                    ver.major,
+                    ver.minor,
+                    if ver.micro != 0 { ver.micro - 1 } else { 0 },
+                )),
+                true,
+            ),
+            ScmpVersionTest::new(
+                "VerNew",
+                ScmpVersion::from((ver.major + 1, ver.minor + 1, ver.micro + 1)),
+                false,
+            ),
+            ScmpVersionTest::new(
+                "VerMajor+1",
+                ScmpVersion::from((ver.major + 1, 0, 0)),
+                false,
+            ),
+            ScmpVersionTest::new(
+                "VerMinor+1",
+                ScmpVersion::from((ver.major, ver.minor + 1, 0)),
+                false,
+            ),
+            ScmpVersionTest::new(
+                "VerMicro+1",
+                ScmpVersion::from((ver.major, ver.minor, ver.micro + 1)),
+                false,
+            ),
+        ];
+
+        for test in tests {
+            assert_eq!(
+                ensure_supported_version(test.msg, test.ver).is_ok(),
+                test.is_ok
+            );
+        }
     }
 }

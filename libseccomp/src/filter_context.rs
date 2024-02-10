@@ -6,7 +6,7 @@
 use crate::api::ensure_supported_api;
 use crate::error::{Result, SeccompError};
 use libseccomp_sys::*;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsFd, AsRawFd};
 use std::ptr::NonNull;
 
 use crate::*;
@@ -43,15 +43,21 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn new_filter(default_action: ScmpAction) -> Result<Self> {
+    pub fn new(default_action: ScmpAction) -> Result<Self> {
         let ctx_ptr = unsafe { seccomp_init(default_action.to_sys()) };
         let ctx = NonNull::new(ctx_ptr)
             .ok_or_else(|| SeccompError::with_msg("Could not create new filter"))?;
 
         Ok(Self { ctx })
+    }
+
+    /// Deprecated alias for [`ScmpFilterContext::new`].
+    #[deprecated(since = "0.4.0", note = "Use ScmpFilterContext::new instead.")]
+    pub fn new_filter(default_action: ScmpAction) -> Result<Self> {
+        Self::new(default_action)
     }
 
     /// Merges two filters.
@@ -76,8 +82,8 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx1 = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-    /// let mut ctx2 = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx1 = ScmpFilterContext::new(ScmpAction::Allow)?;
+    /// let mut ctx2 = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// if !ctx1.is_arch_present(ScmpArch::X8664)? {
     ///     ctx1.add_arch(ScmpArch::X8664)?;
     ///     ctx1.remove_arch(ScmpArch::Native)?;
@@ -89,13 +95,13 @@ impl ScmpFilterContext {
     /// ctx1.merge(ctx2)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn merge(&mut self, src: Self) -> Result<()> {
+    pub fn merge(&mut self, src: Self) -> Result<&mut Self> {
         cvt(unsafe { seccomp_merge(self.ctx.as_ptr(), src.ctx.as_ptr()) })?;
 
         // The src filter is already released.
         std::mem::forget(src);
 
-        Ok(())
+        Ok(self)
     }
 
     /// Checks if an architecture is present in a filter.
@@ -126,7 +132,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.add_arch(ScmpArch::Aarch64)?;
     /// assert!(ctx.is_arch_present(ScmpArch::Aarch64)?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -141,9 +147,8 @@ impl ScmpFilterContext {
 
     /// Adds an architecture to the filter.
     ///
-    /// This function returns `Ok(true)` if the architecture was added to the
-    /// filter and `Ok(false)` if the architecture was already present in the
-    /// filter.
+    /// When this functions exits successfully the architecture is (now) present
+    /// in the filter.
     ///
     /// This function corresponds to
     /// [`seccomp_arch_add`](https://man7.org/linux/man-pages/man3/seccomp_arch_add.3.html).
@@ -161,23 +166,24 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.add_arch(ScmpArch::X86)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn add_arch(&mut self, arch: ScmpArch) -> Result<bool> {
+    pub fn add_arch(&mut self, arch: ScmpArch) -> Result<&mut Self> {
         match unsafe { seccomp_arch_add(self.ctx.as_ptr(), arch.to_sys()) } {
-            0 => Ok(true),
-            MINUS_EEXIST => Ok(false),
+            // The libseccomp returns -EEXIST if the specified architecture is already
+            // present. Succeed silently in this case, as it's not fatal, and the
+            // architecture is present already.
+            0 | MINUS_EEXIST => Ok(self),
             errno => Err(SeccompError::from_errno(errno)),
         }
     }
 
     /// Removes an architecture from the filter.
     ///
-    /// This function returns `Ok(true)` if the architecture was removed from
-    /// the filter and `Ok(false)` if the architecture wasn't present in the
-    /// filter.
+    /// When this functions exits successfully the architecture is not present
+    /// in the filter (anymore).
     ///
     /// This function corresponds to
     /// [`seccomp_arch_remove`](https://man7.org/linux/man-pages/man3/seccomp_arch_remove.3.html).
@@ -195,15 +201,17 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.add_arch(ScmpArch::X86)?;
     /// ctx.remove_arch(ScmpArch::X86)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn remove_arch(&mut self, arch: ScmpArch) -> Result<bool> {
+    pub fn remove_arch(&mut self, arch: ScmpArch) -> Result<&mut Self> {
         match unsafe { seccomp_arch_remove(self.ctx.as_ptr(), arch.to_sys()) } {
-            0 => Ok(true),
-            MINUS_EEXIST => Ok(false),
+            // Similar to add_arch, -EEXIST is returned if the arch is not present.
+            // Succeed silently in that case, this is not fatal and the architecture
+            // is not present in the filter after remove_arch
+            0 | MINUS_EEXIST => Ok(self),
             errno => Err(SeccompError::from_errno(errno)),
         }
     }
@@ -230,12 +238,16 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let syscall = ScmpSyscall::from_name("ptrace")?;
     /// ctx.add_rule(ScmpAction::Errno(libc::EPERM), syscall)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn add_rule<S: Into<ScmpSyscall>>(&mut self, action: ScmpAction, syscall: S) -> Result<()> {
+    pub fn add_rule<S: Into<ScmpSyscall>>(
+        &mut self,
+        action: ScmpAction,
+        syscall: S,
+    ) -> Result<&mut Self> {
         self.add_rule_conditional(action, syscall, &[])
     }
 
@@ -264,7 +276,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let syscall = ScmpSyscall::from_name("open")?;
     /// ctx.add_rule_conditional(
     ///     ScmpAction::Errno(libc::EPERM),
@@ -278,7 +290,7 @@ impl ScmpFilterContext {
         action: ScmpAction,
         syscall: S,
         comparators: &[ScmpArgCompare],
-    ) -> Result<()> {
+    ) -> Result<&mut Self> {
         cvt(unsafe {
             seccomp_rule_add_array(
                 self.ctx.as_ptr(),
@@ -287,7 +299,8 @@ impl ScmpFilterContext {
                 comparators.len() as u32,
                 comparators.as_ptr().cast::<scmp_arg_cmp>(),
             )
-        })
+        })?;
+        Ok(self)
     }
 
     /// Adds a single rule for an unconditional action on a syscall.
@@ -314,7 +327,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let syscall = ScmpSyscall::from_name("dup3")?;
     /// ctx.add_rule_exact(ScmpAction::KillThread, syscall)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -323,7 +336,7 @@ impl ScmpFilterContext {
         &mut self,
         action: ScmpAction,
         syscall: S,
-    ) -> Result<()> {
+    ) -> Result<&mut Self> {
         self.add_rule_conditional_exact(action, syscall, &[])
     }
 
@@ -352,7 +365,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let syscall = ScmpSyscall::from_name("socket")?;
     /// ctx.add_rule_conditional_exact(
     ///     ScmpAction::Errno(libc::EPERM),
@@ -366,7 +379,7 @@ impl ScmpFilterContext {
         action: ScmpAction,
         syscall: S,
         comparators: &[ScmpArgCompare],
-    ) -> Result<()> {
+    ) -> Result<&mut Self> {
         cvt(unsafe {
             seccomp_rule_add_exact_array(
                 self.ctx.as_ptr(),
@@ -375,7 +388,8 @@ impl ScmpFilterContext {
                 comparators.len() as u32,
                 comparators.as_ptr().cast::<scmp_arg_cmp>(),
             )
-        })
+        })?;
+        Ok(self)
     }
 
     /// Loads a filter context into the kernel.
@@ -394,7 +408,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let syscall = ScmpSyscall::from_name("dup3")?;
     /// ctx.add_rule(ScmpAction::KillThread, syscall)?;
     /// ctx.load()?;
@@ -428,7 +442,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let syscall = ScmpSyscall::from_name("open")?;
     /// ctx.set_syscall_priority(syscall, 100)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -437,16 +451,20 @@ impl ScmpFilterContext {
         &mut self,
         syscall: S,
         priority: u8,
-    ) -> Result<()> {
+    ) -> Result<&mut Self> {
         cvt(unsafe {
             seccomp_syscall_priority(self.ctx.as_ptr(), syscall.into().to_sys(), priority)
-        })
+        })?;
+        Ok(self)
     }
 
     /// Gets a raw filter attribute value.
     ///
     /// The seccomp filter attributes are tunable values that affect how the library behaves
     /// when generating and loading the seccomp filter into the kernel.
+    ///
+    /// > **NOTE**: Usage of this function is discouraged.
+    /// > Use type safe `get_*` functions instead.
     ///
     /// This function corresponds to
     /// [`seccomp_attr_get`](https://man7.org/linux/man-pages/man3/seccomp_attr_get.3.html).
@@ -464,7 +482,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// assert_ne!(ctx.get_filter_attr(ScmpFilterAttr::CtlNnp)?, 0);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -477,7 +495,7 @@ impl ScmpFilterContext {
     }
 
     /// Gets the default action as specified in the call to
-    /// [`new_filter()`](ScmpFilterContext::new_filter) or [`reset()`](ScmpFilterContext::reset).
+    /// [`new()`](ScmpFilterContext::new) or [`reset()`](ScmpFilterContext::reset).
     ///
     /// This function corresponds to
     /// [`seccomp_attr_get`](https://man7.org/linux/man-pages/man3/seccomp_attr_get.3.html).
@@ -491,7 +509,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let action = ctx.get_act_default()?;
     /// assert_eq!(action, ScmpAction::Allow);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -517,7 +535,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// let action = ctx.get_act_badarch()?;
     /// assert_eq!(action, ScmpAction::KillThread);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -545,7 +563,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_nnp(false)?;
     /// assert!(!ctx.get_ctl_nnp()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -579,7 +597,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_tsync(true)?;
     /// assert!(ctx.get_ctl_tsync()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -608,7 +626,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_log(true)?;
     /// assert!(ctx.get_ctl_log()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -639,7 +657,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// # if check_api(4, ScmpVersion::from((2, 5, 0))).unwrap() {
     /// ctx.set_ctl_ssb(false)?;
     /// assert!(!ctx.get_ctl_ssb()?);
@@ -657,7 +675,7 @@ impl ScmpFilterContext {
     ///
     /// See [`set_ctl_optimize()`](ScmpFilterContext::set_ctl_optimize) for more details about
     /// the optimization level.
-    /// The [`ScmpFilterAttr::CtlOptimize`] attribute is only usable when the libseccomp API level 4 or higher
+    /// The [`ScmpFilterAttr::CtlOptimize`] attribute is only usable when the libseccomp version 2.5.0 or higher
     /// is supported.
     ///
     /// This function corresponds to
@@ -666,21 +684,18 @@ impl ScmpFilterContext {
     /// # Errors
     ///
     /// If this function is called with an invalid filter, an issue is encountered
-    /// getting the current state, or the libseccomp API level is less than 4, an error will be returned.
+    /// getting the current state, or the libseccomp version is less than 2.5.0, an error will be returned.
     ///
     /// # Examples
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-    /// # if check_api(4, ScmpVersion::from((2, 5, 0)))? {
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_optimize(2)?;
     /// assert_eq!(ctx.get_ctl_optimize()?, 2);
-    /// # }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn get_ctl_optimize(&self) -> Result<u32> {
-        ensure_supported_api("get_ctl_optimize", 4, ScmpVersion::from((2, 5, 0)))?;
         let ret = self.get_filter_attr(ScmpFilterAttr::CtlOptimize)?;
 
         Ok(ret)
@@ -690,7 +705,7 @@ impl ScmpFilterContext {
     ///
     /// This function returns `Ok(true)` if the [`ScmpFilterAttr::ApiSysRawRc`] attribute set to on the filter
     /// being loaded, `Ok(false)` otherwise.
-    /// The [`ScmpFilterAttr::ApiSysRawRc`] attribute is only usable when the libseccomp API level 4 or higher
+    /// The [`ScmpFilterAttr::ApiSysRawRc`] attribute is only usable when the libseccomp version 2.5.0 or higher
     /// is supported.
     ///
     /// This function corresponds to
@@ -699,22 +714,52 @@ impl ScmpFilterContext {
     /// # Errors
     ///
     /// If this function is called with an invalid filter, an issue is encountered
-    /// getting the current state, or the libseccomp API level is less than 4, an error will be returned.
+    /// getting the current state, or the libseccomp version is less than 2.5.0, an error will be returned.
     ///
     /// # Examples
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-    /// # if check_api(4, ScmpVersion::from((2, 5, 0)))? {
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_api_sysrawrc(true)?;
     /// assert!(ctx.get_api_sysrawrc()?);
-    /// # }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn get_api_sysrawrc(&self) -> Result<bool> {
-        ensure_supported_api("get_api_sysrawrc", 4, ScmpVersion::from((2, 5, 0)))?;
         let ret = self.get_filter_attr(ScmpFilterAttr::ApiSysRawRc)?;
+
+        Ok(ret != 0)
+    }
+
+    /// Gets the current state of the [`ScmpFilterAttr::CtlWaitkill`] attribute.
+    ///
+    /// This function returns `Ok(true)` if the [`ScmpFilterAttr::CtlWaitkill`] attribute set to on the filter being
+    /// loaded, `Ok(false)` otherwise.
+    /// The [`ScmpFilterAttr::CtlWaitkill`] attribute is only usable when the libseccomp API level 7 or higher
+    /// is supported.
+    ///
+    /// This function corresponds to
+    /// [`seccomp_attr_get`](https://man7.org/linux/man-pages/man3/seccomp_attr_get.3.html).
+    ///
+    /// # Errors
+    ///
+    /// If this function is called with an invalid filter, an issue is encountered
+    /// getting the current state, or the libseccomp API level is less than 7, an error will be returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use libseccomp::*;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
+    /// # if check_api(7, ScmpVersion::from((2, 6, 0))).unwrap() {
+    /// ctx.set_ctl_waitkill(true)?;
+    /// assert!(!ctx.get_ctl_waitkill()?);
+    /// # }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn get_ctl_waitkill(&self) -> Result<bool> {
+        ensure_supported_api("get_ctl_waitkill", 7, ScmpVersion::from((2, 6, 0)))?;
+        let ret = self.get_filter_attr(ScmpFilterAttr::CtlWaitkill)?;
 
         Ok(ret != 0)
     }
@@ -723,6 +768,9 @@ impl ScmpFilterContext {
     ///
     /// The seccomp filter attributes are tunable values that affect how the library behaves
     /// when generating and loading the seccomp filter into the kernel.
+    ///
+    /// > **NOTE**: Usage of this function is discouraged.
+    /// > Use type safe `set_*` functions instead.
     ///
     /// This function corresponds to
     /// [`seccomp_attr_set`](https://man7.org/linux/man-pages/man3/seccomp_attr_set.3.html).
@@ -740,8 +788,9 @@ impl ScmpFilterContext {
     ///
     /// If this function is called with an invalid filter or an issue is
     /// encountered setting the attribute, an error will be returned.
-    pub fn set_filter_attr(&mut self, attr: ScmpFilterAttr, value: u32) -> Result<()> {
-        cvt(unsafe { seccomp_attr_set(self.ctx.as_ptr(), attr.to_sys(), value) })
+    pub fn set_filter_attr(&mut self, attr: ScmpFilterAttr, value: u32) -> Result<&mut Self> {
+        cvt(unsafe { seccomp_attr_set(self.ctx.as_ptr(), attr.to_sys(), value) })?;
+        Ok(self)
     }
 
     /// Sets the default action taken when the loaded filter does not match the architecture
@@ -765,11 +814,11 @@ impl ScmpFilterContext {
     ///
     ///  ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_act_badarch(ScmpAction::KillProcess)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn set_act_badarch(&mut self, action: ScmpAction) -> Result<()> {
+    pub fn set_act_badarch(&mut self, action: ScmpAction) -> Result<&mut Self> {
         self.set_filter_attr(ScmpFilterAttr::ActBadArch, action.to_sys())
     }
 
@@ -797,17 +846,17 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_nnp(false)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn set_ctl_nnp(&mut self, state: bool) -> Result<()> {
+    pub fn set_ctl_nnp(&mut self, state: bool) -> Result<&mut Self> {
         self.set_filter_attr(ScmpFilterAttr::CtlNnp, state.into())
     }
 
     /// Deprecated alias for [`ScmpFilterContext::set_ctl_nnp()`].
     #[deprecated(since = "0.2.3", note = "Use ScmpFilterContext::set_ctl_nnp().")]
-    pub fn set_no_new_privs_bit(&mut self, state: bool) -> Result<()> {
+    pub fn set_no_new_privs_bit(&mut self, state: bool) -> Result<&mut Self> {
         self.set_ctl_nnp(state)
     }
 
@@ -840,11 +889,11 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_tsync(true)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn set_ctl_tsync(&mut self, state: bool) -> Result<()> {
+    pub fn set_ctl_tsync(&mut self, state: bool) -> Result<&mut Self> {
         ensure_supported_api("set_ctl_tsync", 2, ScmpVersion::from((2, 2, 0)))?;
         self.set_filter_attr(ScmpFilterAttr::CtlTsync, state.into())
     }
@@ -875,11 +924,11 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_log(true)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn set_ctl_log(&mut self, state: bool) -> Result<()> {
+    pub fn set_ctl_log(&mut self, state: bool) -> Result<&mut Self> {
         ensure_supported_api("set_ctl_log", 3, ScmpVersion::from((2, 4, 0)))?;
         self.set_filter_attr(ScmpFilterAttr::CtlLog, state.into())
     }
@@ -909,13 +958,13 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// # if check_api(4, ScmpVersion::from((2, 5, 0))).unwrap() {
     /// ctx.set_ctl_ssb(false)?;
     /// # }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn set_ctl_ssb(&mut self, state: bool) -> Result<()> {
+    pub fn set_ctl_ssb(&mut self, state: bool) -> Result<&mut Self> {
         ensure_supported_api("set_ctl_ssb", 4, ScmpVersion::from((2, 5, 0)))?;
         self.set_filter_attr(ScmpFilterAttr::CtlSsb, state.into())
     }
@@ -928,7 +977,7 @@ impl ScmpFilterContext {
     /// consistent O(log n) filter traversal for every rule in the filter. The binary tree may be advantageous
     /// for large filters. Note that [`set_syscall_priority()`](ScmpFilterContext::set_syscall_priority) is
     /// ignored when `level` == `2`.
-    /// The [`ScmpFilterAttr::CtlOptimize`] attribute is only usable when the libseccomp API level 4 or higher
+    /// The [`ScmpFilterAttr::CtlOptimize`] attribute is only usable when the libseccomp version 2.5.0 or higher
     /// is supported.
     ///
     /// The different optimization levels are described below:
@@ -946,20 +995,17 @@ impl ScmpFilterContext {
     /// # Errors
     ///
     /// If this function is called with an invalid filter, an issue is encountered
-    /// setting the attribute, or the libseccomp API level is less than 4, an error will be returned.
+    /// setting the attribute, or the libseccomp version is less than 2.5.0, an error will be returned.
     ///
     /// # Examples
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-    /// # if check_api(4, ScmpVersion::from((2, 5, 0)))? {
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_ctl_optimize(2)?;
-    /// # }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn set_ctl_optimize(&mut self, level: u32) -> Result<()> {
-        ensure_supported_api("set_ctl_optimize", 4, ScmpVersion::from((2, 5, 0)))?;
+    pub fn set_ctl_optimize(&mut self, level: u32) -> Result<&mut Self> {
         self.set_filter_attr(ScmpFilterAttr::CtlOptimize, level)
     }
 
@@ -967,7 +1013,7 @@ impl ScmpFilterContext {
     ///
     /// Settings this to on (`state` == `true`) means that the libseccomp should pass system error codes
     /// back to the caller instead of the default -ECANCELED.
-    /// The [`ScmpFilterAttr::ApiSysRawRc`] attribute is only usable when the libseccomp API level 4 or higher
+    /// The [`ScmpFilterAttr::ApiSysRawRc`] attribute is only usable when the libseccomp version 2.5.0 or higher
     /// is supported.
     ///
     /// Defaults to off (`state` == `false`).
@@ -983,21 +1029,54 @@ impl ScmpFilterContext {
     /// # Errors
     ///
     /// If this function is called with an invalid filter, an issue is encountered
-    /// setting the attribute, or the libseccomp API level is less than 4, an error will be returned.
+    /// setting the attribute, or the libseccomp version is less than 2.5.0, an error will be returned.
     ///
     /// # Examples
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-    /// # if check_api(4, ScmpVersion::from((2, 5, 0)))? {
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.set_api_sysrawrc(true)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn set_api_sysrawrc(&mut self, state: bool) -> Result<&mut Self> {
+        self.set_filter_attr(ScmpFilterAttr::ApiSysRawRc, state.into())
+    }
+
+    /// Sets the state of the [`ScmpFilterAttr::CtlWaitkill`] attribute which will be applied on filter load.
+    ///
+    /// Settings this to on (`state` == `true`) specify libseccomp should request wait killable semantics when possible.
+    /// The [`ScmpFilterAttr::CtlWaitkill`] attribute is only usable when the libseccomp API level 7 or higher
+    /// is supported.
+    ///
+    /// Defaults to off (`state` == `false`).
+    ///
+    /// This function corresponds to
+    /// [`seccomp_attr_set`](https://man7.org/linux/man-pages/man3/seccomp_attr_set.3.html).
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - A state flag to specify whether the [`ScmpFilterAttr::CtlWaitkill`] attribute should
+    /// be enabled
+    ///
+    /// # Errors
+    ///
+    /// If this function is called with an invalid filter, an issue is encountered
+    /// setting the attribute, or the libseccomp API level is less than 7, an error will be returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use libseccomp::*;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
+    /// # if check_api(7, ScmpVersion::from((2, 6, 0))).unwrap() {
+    /// ctx.set_ctl_waitkill(true)?;
     /// # }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn set_api_sysrawrc(&mut self, state: bool) -> Result<()> {
-        ensure_supported_api("set_api_sysrawrc", 4, ScmpVersion::from((2, 5, 0)))?;
-        self.set_filter_attr(ScmpFilterAttr::ApiSysRawRc, state.into())
+    pub fn set_ctl_waitkill(&mut self, state: bool) -> Result<&mut Self> {
+        ensure_supported_api("set_ctl_waitkill", 7, ScmpVersion::from((2, 6, 0)))?;
+        self.set_filter_attr(ScmpFilterAttr::CtlWaitkill, state.into())
     }
 
     /// Outputs PFC(Pseudo Filter Code)-formatted, human-readable dump of a filter context's rules to a file.
@@ -1011,20 +1090,20 @@ impl ScmpFilterContext {
     ///
     /// # Errors
     ///
-    /// If this function is called with an invalid filter or  writing to the file fails,
+    /// If this function is called with an invalid filter or writing to the file fails,
     /// an error will be returned.
     ///
     /// # Examples
     ///
     /// ```
     /// # use libseccomp::*;
-    /// # use std::io::{stdout};
-    /// let ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-    /// ctx.export_pfc(&mut stdout())?;
+    /// # use std::io;
+    /// let ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
+    /// ctx.export_pfc(io::stdout())?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn export_pfc<T: AsRawFd>(&self, fd: &mut T) -> Result<()> {
-        cvt(unsafe { seccomp_export_pfc(self.ctx.as_ptr(), fd.as_raw_fd()) })
+    pub fn export_pfc<T: AsFd>(&self, fd: T) -> Result<()> {
+        cvt(unsafe { seccomp_export_pfc(self.ctx.as_ptr(), fd.as_fd().as_raw_fd()) })
     }
 
     /// Outputs BPF(Berkeley Packet Filter)-formatted, kernel-readable dump of a
@@ -1039,20 +1118,20 @@ impl ScmpFilterContext {
     ///
     /// # Errors
     ///
-    /// If this function is called with an invalid filter or  writing to the file fails,
+    /// If this function is called with an invalid filter or writing to the file fails,
     /// an error will be returned.
     ///
     /// # Examples
     ///
     /// ```
     /// # use libseccomp::*;
-    /// # use std::io::{stdout};
-    /// let ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-    /// ctx.export_bpf(&mut stdout())?;
+    /// # use std::io;
+    /// let ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
+    /// ctx.export_bpf(io::stdout())?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn export_bpf<T: AsRawFd>(&self, fd: &mut T) -> Result<()> {
-        cvt(unsafe { seccomp_export_bpf(self.ctx.as_ptr(), fd.as_raw_fd()) })
+    pub fn export_bpf<T: AsFd>(&self, fd: T) -> Result<()> {
+        cvt(unsafe { seccomp_export_bpf(self.ctx.as_ptr(), fd.as_fd().as_raw_fd()) })
     }
 
     /// Resets a filter context, removing all its existing state.
@@ -1073,7 +1152,7 @@ impl ScmpFilterContext {
     ///
     /// ```
     /// # use libseccomp::*;
-    /// let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
     /// ctx.reset(ScmpAction::KillThread)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -1091,6 +1170,77 @@ impl ScmpFilterContext {
     #[must_use]
     pub fn as_ptr(&self) -> scmp_filter_ctx {
         self.ctx.as_ptr()
+    }
+}
+
+/// This `impl`-block requires libseccomp 2.6.0 or newer.
+#[cfg(any(libseccomp_v2_6, all(doc, not(doctest))))]
+impl ScmpFilterContext {
+    /// Outputs BPF(Berkeley Packet Filter)-formatted, kernel-readable dump of a
+    /// filter context's rules to a in-memory buffer.
+    ///
+    /// This function corresponds to
+    /// [`seccomp_export_bpf_mem`](https://man7.org/linux/man-pages/man3/seccomp_export_bpf_mem.3.html).
+    ///
+    /// # Errors
+    ///
+    /// If this function encounters an issue while exporting the filter, an error will be returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use libseccomp::*;
+    /// # use std::io::{stdout};
+    /// let ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
+    /// let buf = ctx.export_bpf_mem()?;
+    /// println!("{buf:?}");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn export_bpf_mem(&self) -> Result<Vec<u8>> {
+        // We call seccomp_export_bpf_mem with buf specified as a NULL-ptr first
+        // to query the required buffer size.
+        let mut len: usize = 0;
+        cvt(unsafe { seccomp_export_bpf_mem(self.ctx.as_ptr(), std::ptr::null_mut(), &mut len) })?;
+
+        let mut buf: Vec<u8> = vec![0; len];
+        let mut buf_len = buf.len();
+        cvt(unsafe {
+            seccomp_export_bpf_mem(
+                self.ctx.as_ptr(),
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                &mut buf_len,
+            )
+        })?;
+
+        Ok(buf)
+    }
+
+    /// Precompute the seccomp filter for future use
+    ///
+    /// This function precomputes the seccomp filter and stores it internally for
+    /// future use, speeding up [`ScmpFilterContext::load()`] and other functions which require
+    /// the generated filter.
+    ///
+    /// This function corresponds to
+    /// [`seccomp_precompute`](https://man7.org/linux/man-pages/man3/seccomp_precompute.3.html).
+    ///
+    /// # Errors
+    ///
+    /// If precomputing the filter fails, an error will be returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use libseccomp::*;
+    /// let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
+    /// let syscall = ScmpSyscall::from_name("dup3")?;
+    /// ctx.add_rule(ScmpAction::KillThread, syscall)?;
+    /// ctx.precompute()?;
+    /// ctx.load()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn precompute(&self) -> Result<()> {
+        cvt(unsafe { seccomp_precompute(self.ctx.as_ptr()) })
     }
 }
 
@@ -1112,7 +1262,7 @@ mod tests {
 
     #[test]
     fn test_as_ptr() {
-        let ctx = ScmpFilterContext::new_filter(ScmpAction::Allow).unwrap();
+        let ctx = ScmpFilterContext::new(ScmpAction::Allow).unwrap();
         assert_eq!(ctx.as_ptr(), ctx.ctx.as_ptr());
     }
 }

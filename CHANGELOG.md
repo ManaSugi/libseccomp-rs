@@ -7,11 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 ### Added
-- Minimum Supported Rust Version (MSRV): 1.46
+- Minimum Supported Rust Version (MSRV): 1.63
+- `futex_waitv`, `set_mempolicy_home_node`, atmoic_barrier`,
+  `atmoic_cmpxchg_32` and `getpagesize` syscalls for the `const-syscall` feature
+- Support for `loongarch64`, `m68k`, `sheb` and `sh` architectures. Note that Rust has
+  no support for `SuperH` so you can not use libseccomp-rs on such architectures.
+  You can however create and export seccomp-bpf for them.
+- `SeccompError::sysrawrc()` that queries the system's raw error code directly returned
+  by `ScmpFilterAttr::ApiSysRawRc`.
+- `const-syscall` support for loongarch64 and m68k
+- `ScmpFilterContext::precompute`
+- `ScmpFilterContext::get_ctl_waitkill` and `ScmpFilterContext::set_ctl_waitkill`
+- `ScmpFilterAttr:CtlWaitkill`
+- `SeccmopError::raw_ffi_value`
 
 ### Changed
 
+#### Non-breaking
+- `get_api_sysrawrc` and `set_api_sysrawrc` can now be used with any API level.
+- `get_ctl_optimize` and `set_ctl_optimize` can now be used with any API level.
+- Rust 2021 Edition
+- updated `const-syscall` syscall definitions
+- Some error messages
+
+#### breaking, caught by compiler
+- `ScmpFilterContext::{add,remove}_arch` return type changed to `Result<()>`.
+  If you actually used the returned bool, call `ScmpFilterContext::is_arch_present` first.
+- Rename `ScmpFilterContext::new_filter` to `ScmpFilterContext::new`.
+- `ScmpFilterContext` methods support builder pattern.
+- IO-Safety for `ScmpFilterContext::export_{bpf,pfc}`.
+
+#### silent breaking, not caught by compiler
+- Changed `check_version` logic not to fail even if the `major` version is greater than the specified version.
+- Updated bitflags dependency to `~2.4.0`
+
 ### Removed
+- Drop the libseccomp < 2.5.0 support.
 
 ## 0.3.0 - 2022-10-01
 ### Added

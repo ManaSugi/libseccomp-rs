@@ -4,7 +4,7 @@
 [![Latest release on crates.io](https://img.shields.io/crates/v/libseccomp.svg)](https://crates.io/crates/libseccomp)
 [![Documentation on docs.rs](https://docs.rs/libseccomp/badge.svg)](https://docs.rs/libseccomp)
 [![codecov](https://codecov.io/gh/libseccomp-rs/libseccomp-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/libseccomp-rs/libseccomp-rs)
-[![MSRV: 1.46](https://img.shields.io/badge/MSRV-1.46-informational)](https://blog.rust-lang.org/2020/08/27/Rust-1.46.0.html)
+[![MSRV: 1.63](https://img.shields.io/badge/MSRV-1.63-informational)](https://blog.rust-lang.org/2022/08/11/Rust-1.63.0.html)
 
 Rust Language Bindings for the libseccomp Library
 
@@ -32,7 +32,7 @@ use libseccomp::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Creates and returns a new filter context.
-    let mut filter = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+    let mut filter = ScmpFilterContext::new(ScmpAction::Allow)?;
 
     // Adds an architecture to the filter.
     filter.add_arch(ScmpArch::X8664)?;
@@ -46,21 +46,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Loads the filter context into the kernel.
     filter.load()?;
 
-    // The dup3 fails by the seccomp rule.
-    assert_eq!(
-        unsafe { libc::dup3(0, 100, libc::O_CLOEXEC) } as i32,
-        -libc::EPERM
-    );
+    // The syscall fails by the seccomp rule.
+    assert_eq!(unsafe { libc::dup3(0, 100, libc::O_CLOEXEC) }, -libc::EPERM);
+    // The errno is the number specified by the seccomp action.
     assert_eq!(std::io::Error::last_os_error().raw_os_error().unwrap(), 10);
 
     Ok(())
 }
-
 ```
 
 ## Requirements
 Before using the libseccomp crate, you need to install the libseccomp library for your system.
-The libseccomp library version 2.4 or newer is required.
+The libseccomp library version 2.5.0 or newer is required.
 
 ### Installing the libseccomp library from a package
 

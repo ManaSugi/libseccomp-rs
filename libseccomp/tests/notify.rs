@@ -1,5 +1,3 @@
-#![cfg(libseccomp_v2_5)]
-
 use libc::{dup3, O_CLOEXEC};
 use libseccomp::*;
 use std::thread;
@@ -28,7 +26,7 @@ struct TestData {
 fn test_user_notification() {
     skip_if_not_supported!();
 
-    let mut ctx = ScmpFilterContext::new_filter(ScmpAction::Allow).unwrap();
+    let mut ctx = ScmpFilterContext::new(ScmpAction::Allow).unwrap();
     let syscall = ScmpSyscall::from_name("dup3").unwrap();
     let arch = ScmpArch::native();
 
@@ -129,19 +127,11 @@ fn test_resp_new() {
 fn test_error() {
     skip_if_not_supported!();
 
-    let ctx = ScmpFilterContext::new_filter(ScmpAction::Allow).unwrap();
+    let ctx = ScmpFilterContext::new(ScmpAction::Allow).unwrap();
     let resp = ScmpNotifResp::new(0, 0, 0, 0);
 
     assert!(ctx.get_notify_fd().is_err());
     assert!(ScmpNotifReq::receive(0).is_err());
     assert!(resp.respond(0).is_err());
     assert!(notify_id_valid(0, 0).is_err());
-}
-
-#[test]
-fn resp_flags_from_bits_preserve() {
-    assert_eq!(
-        ScmpNotifRespFlags::from_bits_preserve(u32::MAX).bits(),
-        u32::MAX
-    );
 }

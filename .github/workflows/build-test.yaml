@@ -5,9 +5,12 @@ on:
       - main
   pull_request:
     types: [opened, reopened, edited, synchronize]
+  workflow_dispatch:
+  schedule:
+    - cron: '00 01 * * *'
 
 env:
-  msrv: 1.46
+  msrv: 1.63
 
 jobs:
   validate:
@@ -15,9 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install upstream libseccomp
-        run: sudo ./scripts/install_libseccomp.sh
+        uses: ./.github/actions/setup
       - name: Prepare for rustfmt and clippy
         run: rustup component add rustfmt clippy
       - name: Run rustfmt
@@ -31,18 +34,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        libseccomp-version: [2.4.3, 2.5.1, 2.5.3]
-    env:
-      LIBSECCOMP_LINK_TYPE: dylib
-      LIBSECCOMP_LIB_PATH: /usr/local/libseccomp/lib
+        libseccomp-version: [v2.5.0, v2.5.1, v2.5.3, v2.5.4, main]
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install upstream libseccomp
-        run: |
-          install_dir=$(dirname ${{ env.LIBSECCOMP_LIB_PATH }})
-          sudo ./scripts/install_libseccomp.sh -v ${{ matrix.libseccomp-version }} -i ${install_dir}
-          echo "LD_LIBRARY_PATH=${{ env.LIBSECCOMP_LIB_PATH }}" >> $GITHUB_ENV
+        uses: ./.github/actions/setup
+        with:
+          version: ${{ matrix.libseccomp-version }}
       - name: Build crate
         run: make debug
       - name: Build crate with all features
@@ -58,23 +57,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        libseccomp-version: [2.4.3, 2.5.1, 2.5.3]
+        libseccomp-version: [v2.5.0, v2.5.1, v2.5.3, v2.5.4, main]
         target:
           - x86_64-unknown-linux-musl
-    env:
-      LIBSECCOMP_LINK_TYPE: static
-      LIBSECCOMP_LIB_PATH: /usr/local/libseccomp-musl/lib
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
       - name: Install musl gcc
         run: sudo apt-get install musl-tools
       - name: Install upstream libseccomp
-        run: |
-          install_dir=$(dirname ${{ env.LIBSECCOMP_LIB_PATH }})
-          sudo ./scripts/install_libseccomp.sh -m -v ${{ matrix.libseccomp-version }} -i ${install_dir}
+        uses: ./.github/actions/setup
+        with:
+          version: ${{ matrix.libseccomp-version }}
+          link-type: static
       - name: Build crate
         run: cargo build --target ${{ matrix.target }}
       - name: Run test
@@ -93,55 +90,67 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - i686-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
           - arm-unknown-linux-gnueabihf
-          - mips-unknown-linux-gnu
-          - mips64-unknown-linux-gnuabi64
+          - i686-unknown-linux-gnu
+          - loongarch64-unknown-linux-gnu
+          #- m68k-unknown-linux-gnu # It is unavailable even in channel 'nightly'.
+          #- mips-unknown-linux-gnu # It has been dropped to Tier 3 since 1.72
+          #- mips64-unknown-linux-gnuabi64 # It has been dropped to Tier 3 since 1.72
           - powerpc-unknown-linux-gnu
           - powerpc64-unknown-linux-gnu
           - riscv64gc-unknown-linux-gnu
           - s390x-unknown-linux-gnu
+        include:
+          - target: loongarch64-unknown-linux-gnu
+            nightly: true
+          #- target: m68k-unknown-linux-gnu
+          #  nightly: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install libseccomp
         run: sudo apt-get install libseccomp-dev
       - name: Install Rust toolchain
-        run: rustup target add ${{ matrix.target }}
+        run: |
+          if [[ "${{ matrix.nightly }}" == true ]]; then
+            rustup +nightly component add rust-src
+            rustup +nightly target add ${{ matrix.target }}
+          else
+            rustup target add ${{ matrix.target }}
+          fi
       - name: Build crate
-        run: cargo build --target ${{ matrix.target }} --all-features
+        run: |
+          if [[ "${{ matrix.nightly }}" == true ]]; then
+            cargo +nightly build -Z build-std --target ${{ matrix.target }} --all-features
+          else
+            cargo build --target ${{ matrix.target }} --all-features
+          fi
+
+  asan:
+    name: Address Sanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install upstream libseccomp
+        uses: ./.github/actions/setup
+      - name: Install Rust toolchain
+        run: rustup +nightly target add x86_64-unknown-linux-gnu
+      - name: Run test with address sanitizer
+        run: cargo +nightly test --target x86_64-unknown-linux-gnu --tests -- --color always --nocapture --test-threads 1
+        env:
+          RUSTFLAGS: -Z sanitizer=address
 
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Install Rust ${{ env.msrv }}
         run: rustup default ${{ env.msrv }}
       - name: Install upstream libseccomp
-        run: sudo ./scripts/install_libseccomp.sh
-      - name: Build crate with all target and features
-        run: |
-          cargo -vV
-          cargo clean
-          cargo build --all-targets --all-features
-      - name: Run test
-        run: cargo test --all-targets --all-features -- --nocapture --test-threads 1
-
-  msrv_compat:
-    name: MSRV Compat
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: [1.52, 1.53]
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install Rust ${{ matrix.rust }}
-        run: rustup default ${{ matrix.rust }}
-      - name: Install upstream libseccomp
-        run: sudo ./scripts/install_libseccomp.sh
+        uses: ./.github/actions/setup
       - name: Build crate with all target and features
         run: |
           cargo -vV
@@ -157,16 +166,18 @@ jobs:
       RUSTDOCFLAGS: -Dwarnings
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+      - name: Install the nightly toolchain
+        run: rustup install nightly
       - name: Generate documentations
-        run: cargo doc --no-deps
+        run: make doc
 
   codespell:
     name: Check Spelling
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install codespell
         run: pip install codespell
       - name: Run codespell
@@ -177,25 +188,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Verify that the libseccomp crate version is up to date in README
         run: grep -q "$(sed -n 's/^version = \(.*\)/libseccomp = \1/p' libseccomp/Cargo.toml)" README.md
 
-#  coverage:
-#    name: Code Coverage
-#    runs-on: ubuntu-latest
-#    strategy:
-#      matrix:
-#        features:
-#          - all-features
-#    steps:
-#      - name: Checkout
-#        uses: actions/checkout@v3
-#      - name: Install upstream libseccomp
-#        run: sudo ./scripts/install_libseccomp.sh
-#      - name: Run cargo tarpaulin
-#        uses: actions-rs/tarpaulin@v0.1
-#        with:
-#          args: '--${{ matrix.features }} -- --test-threads 1'
-#      - name: Upload to codecov.io
-#        uses: codecov/codecov-action@v3
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install upstream libseccomp
+        uses: ./.github/actions/setup
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --test-threads 1
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: lcov.info
+          fail_ci_if_error: true

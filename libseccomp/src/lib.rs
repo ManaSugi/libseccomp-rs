@@ -19,30 +19,35 @@
 //! use libseccomp::*;
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut filter = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
+//!     let mut filter = ScmpFilterContext::new(ScmpAction::Allow)?;
 //!     let syscall = ScmpSyscall::from_name("getuid")?;
 //!
 //!     filter.add_arch(ScmpArch::X8664)?;
 //!     filter.add_rule(ScmpAction::Errno(1), syscall)?;
+//!     filter.set_ctl_log(true)?;
+//!     filter.set_syscall_priority(syscall, 100)?;
 //!     filter.load()?;
 //!
 //!     Ok(())
 //! }
 //! ```
-
+//!
+//! The above example can be replaced with builder pattern.
+//!
 //! ```rust
 //! use libseccomp::*;
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut filter = ScmpFilterContext::new_filter(ScmpAction::Allow)?;
-//!     let syscall = ScmpSyscall::from_name("dup3")?;
-//!     let cmp = ScmpArgCompare::new(0, ScmpCompareOp::Equal, 1);
+//!     let syscall = ScmpSyscall::from_name("getuid")?;
 //!
-//!     filter.add_arch(ScmpArch::X8664)?;
-//!     filter.add_rule_conditional(ScmpAction::Errno(libc::EPERM), syscall, &[cmp])?;
-//!     filter.load()?;
+//!     ScmpFilterContext::new(ScmpAction::Allow)?
+//!         .add_arch(ScmpArch::X8664)?
+//!         .add_rule(ScmpAction::Errno(1), syscall)?
+//!         .set_ctl_log(true)?
+//!         .set_syscall_priority(syscall, 100)?
+//!         .load()?;
 //!
-//!     Ok(())
+//!    Ok(())
 //! }
 //! ```
 //!
@@ -53,8 +58,7 @@
 #![warn(rust_2018_idioms)]
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
-#![cfg_attr(not(msrv_compat_1_52), deny(unsafe_op_in_unsafe_fn))]
-#![cfg_attr(not(msrv_compat_1_52), allow(unused_unsafe))]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::inefficient_to_string)]
 #![warn(clippy::string_to_string)]
 #![warn(clippy::semicolon_if_nothing_returned)]
@@ -73,7 +77,6 @@ mod compare_op;
 mod filter_attr;
 mod filter_context;
 mod functions;
-#[cfg(any(libseccomp_v2_5, doc))]
 mod notify;
 mod syscall;
 mod version;
@@ -88,7 +91,6 @@ pub use compare_op::ScmpCompareOp;
 pub use filter_attr::ScmpFilterAttr;
 pub use filter_context::ScmpFilterContext;
 pub use functions::*;
-#[cfg(any(libseccomp_v2_5, doc))]
 pub use notify::*;
 pub use syscall::ScmpSyscall;
 pub use version::{check_version, ScmpVersion};
